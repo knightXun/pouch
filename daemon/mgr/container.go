@@ -3,6 +3,7 @@ package mgr
 import (
 	"context"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"os"
 	"os/exec"
@@ -40,6 +41,8 @@ import (
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
+	"github.com/alibaba/pouch/pkg/archive"
+	"github.com/docker/docker/pkg/ioutils"
 )
 
 // ContainerMgr as an interface defines all operations against container.
@@ -152,6 +155,14 @@ type ContainerMgr interface {
 
 	// DeleteCheckpoint deletes a checkpoint from a container
 	DeleteCheckpoint(ctx context.Context, name string, options *types.CheckpointDeleteOptions) error
+
+	ContainerStatPath(ctx context.Context, name string, path string) (stat *types.ContainerPathStat, err error)
+
+	ContainerArchivePath(ctx context.Context, name string, path string) (content io.ReadCloser, stat *types.ContainerPathStat, err error)
+	//
+	//ContainerCopy(ctx context.Context, name string, res string) (io.ReadCloser, error)
+	//
+	//ContainerExtractToDir(ctx context.Context, name, path string, noOverwriteDirNonDir bool, content io.Reader) error
 }
 
 // ContainerManager is the default implement of interface ContainerMgr.
@@ -1213,6 +1224,165 @@ func (mgr *ContainerManager) updateContainerResources(c *Container, resources ty
 	}
 
 	return nil
+}
+
+func (mgr *ContainerManager) ContainerArchivePath(ctx context.Context, name string, path string) (content io.ReadCloser, stat *types.ContainerPathStat, err error) {
+	container, err := mgr.container(name)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return mgr.containerArchivePath(ctx, container, path)
+}
+
+func (mgr *ContainerManager) containerArchivePath(ctx context.Context, container *Container, path string) (content io.ReadCloser, stat *types.ContainerPathStat, err error) {
+	container.Lock()
+	defer container.Unlock()
+
+	resolvedPath, absPath, err := ResolvePath(container, path)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	stat, err = container.StatPath(resolvedPath, absPath)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// We need to rebase the archive entries if the last element of the
+	// resolved path was a symlink that was evaluated and is now different
+	// than the requested path. For example, if the given path was "/foo/bar/",
+	// but it resolved to "/var/lib/docker/containers/{id}/foo/baz/", we want
+	// to ensure that the archive entries start with "bar" and not "baz". This
+	// also catches the case when the root directory of the container is
+	// requested: we want the archive entries to start with "/" and not the
+	// container ID.
+	data, err := archive.TarResourceRebase(resolvedPath, filepath.Base(absPath))
+	if err != nil {
+		return nil, nil, err
+	}
+
+	content = ioutils.NewReadCloserWrapper(data, func() error {
+		err := data.Close()
+		//container.UnmountVolumes(true, mgr.LogVolumeEvent)
+		//daemon.Unmount(container)
+		//container.Unlock()
+		return err
+	})
+
+	mgr.LogContainerEvent(ctx, container, "archive-path")
+
+	return content, stat, nil
+}
+
+func normalizePath(path string) string {
+	return filepath.ToSlash(path)
+}
+
+// specifiesCurrentDir returns whether the given path specifies
+// a "current directory", i.e., the last path segment is `.`.
+func specifiesCurrentDir(path string) bool {
+	return filepath.Base(path) == "."
+}
+
+// hasTrailingPathSeparator returns whether the given
+// path ends with the system's path separator character.
+func hasTrailingPathSeparator(path string) bool {
+	return len(path) > 0 && os.IsPathSeparator(path[len(path)-1])
+}
+
+func PreserveTrailingDotOrSeparator(cleanedPath, originalPath string) string {
+	// Ensure paths are in platform semantics
+	cleanedPath = normalizePath(cleanedPath)
+	originalPath = normalizePath(originalPath)
+
+	if !specifiesCurrentDir(cleanedPath) && specifiesCurrentDir(originalPath) {
+		if !hasTrailingPathSeparator(cleanedPath) {
+			// Add a separator if it doesn't already end with one (a cleaned
+			// path would only end in a separator if it is the root).
+			cleanedPath += string(filepath.Separator)
+		}
+		cleanedPath += "."
+	}
+
+	if !hasTrailingPathSeparator(cleanedPath) && hasTrailingPathSeparator(originalPath) {
+		cleanedPath += string(filepath.Separator)
+	}
+
+	return cleanedPath
+}
+
+func ResolvePath(container *Container, path string) (resolvedPath, absPath string, err error) {
+	absPath = PreserveTrailingDotOrSeparator(filepath.Join(string(filepath.Separator), path), path)
+
+	// Split the absPath into its Directory and Base components. We will
+	// resolve the dir in the scope of the container then append the base.
+	dirPath, basePath := filepath.Split(absPath)
+
+	resolvedDirPath, err := container.GetResourcePath(dirPath)
+	if err != nil {
+		return "", "", err
+	}
+
+	// resolvedDirPath will have been cleaned (no trailing path separators) so
+	// we can manually join it with the base path element.
+	resolvedPath = resolvedDirPath + string(filepath.Separator) + basePath
+
+	return resolvedPath, absPath, nil
+}
+
+
+func (mgr *ContainerManager) LogVolumeEvent(ctx context.Context, volumeID, action string, attributes map[string]string) {
+	actor := &types.EventsActor{
+		ID:         volumeID,
+		Attributes: attributes,
+	}
+	mgr.eventsService.Publish(ctx, action, types.EventTypeVolume, actor)
+}
+
+func (mgr *ContainerManager) ContainerStatPath(ctx context.Context,name string, path string) (stat *types.ContainerPathStat, err error) {
+	container, err := mgr.container(name)
+	if err != nil {
+		return nil, err
+	}
+
+	return mgr.containerStatPath(ctx, container, path)
+}
+
+// containerStatPath stats the filesystem resource at the specified path in this
+// container. Returns stat info about the resource.
+func (mgr *ContainerManager) containerStatPath(ctx context.Context, c *Container, path string) (stat *types.ContainerPathStat, err error) {
+	c.Lock()
+	defer c.Unlock()
+
+	if err := mgr.Mount(ctx , c); err != nil {
+		return nil, err
+	}
+	defer mgr.Unmount(ctx, c)
+
+	resolvedPath, absPath, err := mgr.ResolvePath(path, c)
+
+	return c.StatPath(resolvedPath, absPath)
+}
+
+func (mgr *ContainerManager) ResolvePath(path string, c *Container) (resolvedPath, absPath string, err error) {
+	// Consider the given path as an absolute path in the container.
+	absPath = archive.PreserveTrailingDotOrSeparator(filepath.Join(string(filepath.Separator), path), path)
+
+	// Split the absPath into its Directory and Base components. We will
+	// resolve the dir in the scope of the container then append the base.
+	dirPath, basePath := filepath.Split(absPath)
+
+	resolvedDirPath, err := c.GetResourcePath(dirPath)
+	if err != nil {
+		return "", "", err
+	}
+
+	// resolvedDirPath will have been cleaned (no trailing path separators) so
+	// we can manually join it with the base path element.
+	resolvedPath = resolvedDirPath + string(filepath.Separator) + basePath
+
+	return resolvedPath, absPath, nil
 }
 
 // Upgrade upgrades a container with new image and args.

@@ -19,6 +19,8 @@ import (
 	"github.com/gorilla/mux"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
+	"encoding/base64"
+	"io"
 )
 
 func (s *Server) createContainer(ctx context.Context, rw http.ResponseWriter, req *http.Request) error {
@@ -427,6 +429,89 @@ func (s *Server) waitContainer(ctx context.Context, rw http.ResponseWriter, req 
 	}
 
 	return EncodeResponse(rw, http.StatusOK, &waitStatus)
+}
+
+func (s *Server) headContainersArchive(ctx context.Context, rw http.ResponseWriter, req *http.Request) error {
+	name := mux.Vars(req)["name"]
+	path := mux.Vars(req)["path"]
+
+	stat, err := s.ContainerMgr.ContainerStatPath(ctx, name, path)
+
+	statJSON, err := json.Marshal(stat)
+	if err != nil {
+		return err
+	}
+
+	rw.Header().Set(
+		"X-Pouch-Container-Path-Stat",
+		base64.StdEncoding.EncodeToString(statJSON),
+	)
+
+	rw.WriteHeader(http.StatusCreated)
+	return nil
+}
+
+//// postContainersCopy is deprecated in favor of getContainersArchive.
+//func (s *Server) postContainersCopy(ctx context.Context, w http.ResponseWriter, req *http.Request) error {
+//	name := mux.Vars(req)["name"]
+//	resource := mux.Vars(req)["resource"]
+//
+//	data, err := s.ContainerMgr.ContainerCopy(ctx, name, resource)
+//	if err != nil {
+//		if strings.Contains(strings.ToLower(err.Error()), "no such container") {
+//			w.WriteHeader(http.StatusNotFound)
+//			return nil
+//		}
+//		if os.IsNotExist(err) {
+//			return fmt.Errorf("Could not find the file %v in container %v", resource, name)
+//		}
+//		return err
+//	}
+//	defer data.Close()
+//
+//	w.Header().Set("Content-Type", "application/x-tar")
+//	if _, err := io.Copy(w, data); err != nil {
+//		return err
+//	}
+//
+//	return nil
+//}
+
+//func (s *Server) putContainersArchive(ctx context.Context, rw http.ResponseWriter, req *http.Request) error {
+//	noOverwriteDirNonDir, err := strconv.ParseBool(mux.Vars(req)["noOverwriteDirNonDir"])
+//	if err != nil {
+//		return fmt.Errorf("invalid noOverwriteDirNonDir: %v", err)
+//	}
+//
+//	name := mux.Vars(req)["name"]
+//	path := mux.Vars(req)["path"]
+//	return s.ContainerMgr.ContainerExtractToDir(ctx, name, path, noOverwriteDirNonDir, req.Body)
+//}
+
+func (s *Server) getContainersArchive(ctx context.Context, rw http.ResponseWriter, req *http.Request) error {
+	name := mux.Vars(req)["name"]
+	path := mux.Vars(req)["path"]
+
+	tarArchive, stat, err := s.ContainerMgr.ContainerArchivePath(ctx, name, path)
+	if err != nil {
+		return err
+	}
+	defer tarArchive.Close()
+
+	statJSON, err := json.Marshal(stat)
+	if err != nil {
+		return err
+	}
+	rw.Header().Set(
+		"X-Pouch-Container-Path-Stat",
+		base64.StdEncoding.EncodeToString(statJSON),
+	)
+
+	rw.Header().Set("Content-Type", "application/x-tar")
+	_, err = io.Copy(rw, tarArchive)
+
+	rw.WriteHeader(http.StatusCreated)
+	return nil
 }
 
 func (s *Server) createContainerCheckpoint(ctx context.Context, rw http.ResponseWriter, req *http.Request) error {

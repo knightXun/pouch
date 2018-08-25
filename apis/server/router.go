@@ -60,6 +60,11 @@ func initRoute(s *Server) http.Handler {
 	s.addRoute(r, http.MethodPost, "/containers/{name:.*}/resize", s.resizeContainer)
 	s.addRoute(r, http.MethodPost, "/containers/{name:.*}/restart", s.restartContainer)
 	s.addRoute(r, http.MethodPost, "/containers/{name:.*}/wait", withCancelHandler(s.waitContainer))
+	// copy
+	s.addRoute(r, http.MethodHead, "/containers/{name:.*}/archive", withCancelHandler(s.headContainersArchive))
+	s.addRoute(r, http.MethodGet,"/containers/{name:.*}/archive/{path:.*}", withCancelHandler(s.getContainersArchive))
+	//s.addRoute(r, http.MethodPost, "/containers/{name:.*}/copy", withCancelHandler(s.postContainersCopy))
+	//s.addRoute(r, http.MethodPut, "/containers/{name:.*}/archive", withCancelHandler(s.putContainersArchive))
 
 	// image
 	s.addRoute(r, http.MethodPost, "/images/create", s.pullImage)
