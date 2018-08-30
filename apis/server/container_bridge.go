@@ -21,6 +21,7 @@ import (
 	"github.com/sirupsen/logrus"
 	"encoding/base64"
 	"io"
+	"path/filepath"
 )
 
 func (s *Server) createContainer(ctx context.Context, rw http.ResponseWriter, req *http.Request) error {
@@ -433,8 +434,7 @@ func (s *Server) waitContainer(ctx context.Context, rw http.ResponseWriter, req 
 
 func (s *Server) headContainersArchive(ctx context.Context, rw http.ResponseWriter, req *http.Request) error {
 	name := mux.Vars(req)["name"]
-	path := mux.Vars(req)["path"]
-
+	path := filepath.FromSlash(req.Form.Get("path"))
 	stat, err := s.ContainerMgr.ContainerStatPath(ctx, name, path)
 
 	statJSON, err := json.Marshal(stat)
@@ -451,46 +451,18 @@ func (s *Server) headContainersArchive(ctx context.Context, rw http.ResponseWrit
 	return nil
 }
 
-//// postContainersCopy is deprecated in favor of getContainersArchive.
-//func (s *Server) postContainersCopy(ctx context.Context, w http.ResponseWriter, req *http.Request) error {
-//	name := mux.Vars(req)["name"]
-//	resource := mux.Vars(req)["resource"]
-//
-//	data, err := s.ContainerMgr.ContainerCopy(ctx, name, resource)
-//	if err != nil {
-//		if strings.Contains(strings.ToLower(err.Error()), "no such container") {
-//			w.WriteHeader(http.StatusNotFound)
-//			return nil
-//		}
-//		if os.IsNotExist(err) {
-//			return fmt.Errorf("Could not find the file %v in container %v", resource, name)
-//		}
-//		return err
-//	}
-//	defer data.Close()
-//
-//	w.Header().Set("Content-Type", "application/x-tar")
-//	if _, err := io.Copy(w, data); err != nil {
-//		return err
-//	}
-//
-//	return nil
-//}
+func (s *Server) putContainersArchive(ctx context.Context, rw http.ResponseWriter, req *http.Request) error {
 
-//func (s *Server) putContainersArchive(ctx context.Context, rw http.ResponseWriter, req *http.Request) error {
-//	noOverwriteDirNonDir, err := strconv.ParseBool(mux.Vars(req)["noOverwriteDirNonDir"])
-//	if err != nil {
-//		return fmt.Errorf("invalid noOverwriteDirNonDir: %v", err)
-//	}
-//
-//	name := mux.Vars(req)["name"]
-//	path := mux.Vars(req)["path"]
-//	return s.ContainerMgr.ContainerExtractToDir(ctx, name, path, noOverwriteDirNonDir, req.Body)
-//}
+	noOverwriteDirNonDir := httputils.BoolValue(req, "noOverwriteDirNonDir")
+	path := filepath.FromSlash(req.Form.Get("path"))
+	name := mux.Vars(req)["name"]
+
+	return s.ContainerMgr.ContainerExtractToDir(ctx, name, path, noOverwriteDirNonDir, req.Body)
+}
 
 func (s *Server) getContainersArchive(ctx context.Context, rw http.ResponseWriter, req *http.Request) error {
 	name := mux.Vars(req)["name"]
-	path := mux.Vars(req)["path"]
+	path := filepath.FromSlash(req.Form.Get("path"))
 
 	tarArchive, stat, err := s.ContainerMgr.ContainerArchivePath(ctx, name, path)
 	if err != nil {

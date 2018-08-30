@@ -42,7 +42,9 @@ import (
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 	"github.com/alibaba/pouch/pkg/archive"
-	"github.com/docker/docker/pkg/ioutils"
+	"github.com/alibaba/pouch/pkg/ioutils"
+	"github.com/alibaba/pouch/pkg/idtools"
+	"runtime"
 )
 
 // ContainerMgr as an interface defines all operations against container.
@@ -162,7 +164,7 @@ type ContainerMgr interface {
 	//
 	//ContainerCopy(ctx context.Context, name string, res string) (io.ReadCloser, error)
 	//
-	//ContainerExtractToDir(ctx context.Context, name, path string, noOverwriteDirNonDir bool, content io.Reader) error
+	ContainerExtractToDir(ctx context.Context, name, path string, noOverwriteDirNonDir bool, content io.Reader) error
 }
 
 // ContainerManager is the default implement of interface ContainerMgr.
@@ -1226,6 +1228,153 @@ func (mgr *ContainerManager) updateContainerResources(c *Container, resources ty
 	return nil
 }
 
+// ContainerExtractToDir extracts the given archive to the specified location
+// in the filesystem of the container identified by the given name. The given
+// path must be of a directory in the container. If it is not, the error will
+// be ErrExtractPointNotDirectory. If noOverwriteDirNonDir is true then it will
+// be an error if unpacking the given content would cause an existing directory
+// to be replaced with a non-directory and vice versa.
+func (mgr *ContainerManager) ContainerExtractToDir(ctx context.Context, name, path string, noOverwriteDirNonDir bool, content io.Reader) error {
+	container, err := mgr.container(name)
+	if err != nil {
+		return err
+	}
+
+	return mgr.containerExtractToDir(ctx, container, path, noOverwriteDirNonDir, content)
+}
+
+
+
+func setupRemappedRoot(config *config.Config) ([]idtools.IDMap, []idtools.IDMap, error) {
+	if runtime.GOOS != "linux" {
+		return nil, nil, fmt.Errorf("User namespaces are only supported on Linux")
+	}
+
+	// if the daemon was started with remapped root option, parse
+	// the config option to the int uid,gid values
+	var (
+		uidMaps, gidMaps []idtools.IDMap
+	)
+	//if config.RemappedRoot != "" {
+	//	username, groupname, err := parseRemappedRoot(config.RemappedRoot)
+	//	if err != nil {
+	//		return nil, nil, err
+	//	}
+	//	if username == "root" {
+	//		// Cannot setup user namespaces with a 1-to-1 mapping; "--root=0:0" is a no-op
+	//		// effectively
+	//		logrus.Warn("User namespaces: root cannot be remapped with itself; user namespaces are OFF")
+	//		return uidMaps, gidMaps, nil
+	//	}
+	//	logrus.Infof("User namespaces: ID ranges will be mapped to subuid/subgid ranges of: %s:%s", username, groupname)
+	//	// update remapped root setting now that we have resolved them to actual names
+	//	config.RemappedRoot = fmt.Sprintf("%s:%s", username, groupname)
+	//
+	//	uidMaps, gidMaps, err = idtools.CreateIDMappings(username, groupname)
+	//	if err != nil {
+	//		return nil, nil, fmt.Errorf("Can't create ID mappings: %v", err)
+	//	}
+	//}
+	return uidMaps, gidMaps, nil
+}
+//// GetRemappedUIDGID returns the current daemon's uid and gid values
+//// if user namespaces are in use for this daemon instance.  If not
+//// this function will return "real" root values of 0, 0.
+func (mgr *ContainerManager) GetRemappedUIDGID() (int, int) {
+	uidMaps, gidMaps, _ := setupRemappedRoot(mgr.Config)
+	uid, gid, _ := idtools.GetRootUIDGID(uidMaps, gidMaps)
+	return uid, gid
+}
+
+// containerExtractToDir extracts the given tar archive to the specified location in the
+// filesystem of this container. The given path must be of a directory in the
+// container. If it is not, the error will be ErrExtractPointNotDirectory. If
+// noOverwriteDirNonDir is true then it will be an error if unpacking the
+// given content would cause an existing directory to be replaced with a non-
+// directory and vice versa.
+func (mgr *ContainerManager) containerExtractToDir(ctx context.Context, container *Container, path string, noOverwriteDirNonDir bool, content io.Reader) (err error) {
+	container.Lock()
+	defer container.Unlock()
+
+	// The destination path needs to be resolved to a host path, with all
+	// symbolic links followed in the scope of the container's rootfs. Note
+	// that we do not use `container.ResolvePath(path)` here because we need
+	// to also evaluate the last path element if it is a symlink. This is so
+	// that you can extract an archive to a symlink that points to a directory.
+
+	// Consider the given path as an absolute path in the container.
+	absPath := archive.PreserveTrailingDotOrSeparator(filepath.Join(string(filepath.Separator), path), path)
+
+	// This will evaluate the last path element if it is a symlink.
+	resolvedPath, err := container.GetResourcePath(absPath)
+
+	if err != nil {
+		return err
+	}
+
+	stat, err := os.Lstat(resolvedPath)
+	if err != nil {
+		return err
+	}
+
+	if !stat.IsDir() {
+		return archive.ErrExtractPointNotDirectory
+	}
+
+	// Need to check if the path is in a volume. If it is, it cannot be in a
+	// read-only volume. If it is not in a volume, the container cannot be
+	// configured with a read-only rootfs.
+
+	// Use the resolved path relative to the container rootfs as the new
+	// absPath. This way we fully follow any symlinks in a volume that may
+	// lead back outside the volume.
+	//
+	// The Windows implementation of filepath.Rel in golang 1.4 does not
+	// support volume style file path semantics. On Windows when using the
+	// filter driver, we are guaranteed that the path will always be
+	// a volume file path.
+	var baseRel string
+	if strings.HasPrefix(resolvedPath, `\\?\Volume{`) {
+		if strings.HasPrefix(resolvedPath, container.BaseFS) {
+			baseRel = resolvedPath[len(container.BaseFS):]
+			if baseRel[:1] == `\` {
+				baseRel = baseRel[1:]
+			}
+		}
+	} else {
+		baseRel, err = filepath.Rel(container.BaseFS, resolvedPath)
+	}
+	if err != nil {
+		return err
+	}
+	// Make it an absolute path.
+	absPath = filepath.Join(string(filepath.Separator), baseRel)
+
+	//toVolume, err := checkIfPathIsInAVolume(container, absPath)
+	//if err != nil {
+	//	return err
+	//}
+
+	if  container.HostConfig.ReadonlyRootfs {
+		return fmt.Errorf("container rootfs is marked read-only")
+	}
+
+	uid, gid := mgr.GetRemappedUIDGID()
+	options := &archive.TarOptions{
+		NoOverwriteDirNonDir: noOverwriteDirNonDir,
+		ChownOpts: &archive.TarChownOptions{
+			UID: uid, GID: gid, // TODO: should all ownership be set to root (either real or remapped)?
+		},
+	}
+	if err := archive.Untar(content, resolvedPath, options); err != nil {
+		return err
+	}
+
+	mgr.LogContainerEvent(ctx, container, "extract-to-dir")
+
+	return nil
+}
+
 func (mgr *ContainerManager) ContainerArchivePath(ctx context.Context, name string, path string) (content io.ReadCloser, stat *types.ContainerPathStat, err error) {
 	container, err := mgr.container(name)
 	if err != nil {
@@ -1355,10 +1504,10 @@ func (mgr *ContainerManager) containerStatPath(ctx context.Context, c *Container
 	c.Lock()
 	defer c.Unlock()
 
-	if err := mgr.Mount(ctx , c); err != nil {
-		return nil, err
-	}
-	defer mgr.Unmount(ctx, c)
+	//if err := mgr.Mount(ctx , c); err != nil {
+	//	return nil, err
+	//}
+	//defer mgr.Unmount(ctx, c)
 
 	resolvedPath, absPath, err := mgr.ResolvePath(path, c)
 

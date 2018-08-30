@@ -10,8 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/alibaba/pouch/apis/types"
-	"github.com/docker/docker/pkg/system"
-	"github.com/docker/docker/pkg/archive"
+	"github.com/alibaba/pouch/pkg/archive"
 )
 
 // createDescription is used to describe create command in detail and auto generate command doc.
@@ -128,7 +127,7 @@ func (cc *CopyCommand) runCopy(opts copyOptions) error {
 	case fromContainer:
 		return copyFromContainer(ctx, cc.cli, srcContainer, srcPath, dstPath, cpParam)
 	case toContainer:
-		return fmt.Errorf("copy to containers is not supported")
+		return copyToContainer(ctx, cc.cli, srcPath, dstContainer, dstPath, cpParam)
 	case acrossContainers:
 		// Copying between containers isn't supported.
 		return fmt.Errorf("copying between containers is not supported")
@@ -167,7 +166,7 @@ func copyFromContainer(ctx context.Context, cli *Cli ,srcContainer, srcPath, dst
 		// If the destination is a symbolic link, we should follow it.
 		if err == nil && srcStat.Mode&os.ModeSymlink != 0 {
 			linkTarget := srcStat.LinkTarget
-			if !system.IsAbs(linkTarget) {
+			if !filepath.IsAbs(linkTarget) {
 				// Join with the parent directory.
 				srcParent, _ := archive.SplitPathDirEntry(srcPath)
 				linkTarget = filepath.Join(srcParent, linkTarget)
@@ -208,6 +207,79 @@ func copyFromContainer(ctx context.Context, cli *Cli ,srcContainer, srcPath, dst
 	// goes into deciding how and whether the source archive needs to be
 	// altered for the correct copy behavior.
 	return archive.CopyTo(preArchive, srcInfo, dstPath)
+}
+
+
+func copyToContainer(ctx context.Context, cli *Cli, srcPath, dstContainer, dstPath string, cpParam *cpConfig) (err error) {
+	if srcPath != "-" {
+		// Get an absolute source path.
+		srcPath, err = resolveLocalPath(srcPath)
+		if err != nil {
+			return err
+		}
+	}
+
+	dstInfo := archive.CopyInfo{Path: dstPath}
+	dstStat, err := statContainerPath(ctx, cli, dstContainer, dstPath)
+
+	// If the destination is a symbolic link, we should evaluate it.
+	if err == nil && dstStat.Mode&os.ModeSymlink != 0 {
+		linkTarget := dstStat.LinkTarget
+		if !filepath.IsAbs(linkTarget) {
+			// Join with the parent directory.
+			dstParent, _ := archive.SplitPathDirEntry(dstPath)
+			linkTarget = filepath.Join(dstParent, linkTarget)
+		}
+
+		dstInfo.Path = linkTarget
+		dstStat, err = statContainerPath(ctx, cli, dstContainer, linkTarget)
+	}
+
+	if err == nil {
+		dstInfo.Exists, dstInfo.IsDir = true, dstStat.Mode.IsDir()
+	}
+
+	var (
+		content         io.Reader
+		resolvedDstPath string
+	)
+
+	if srcPath == "-" {
+		// Use STDIN.
+		content = os.Stdin
+		resolvedDstPath = dstInfo.Path
+		if !dstInfo.IsDir {
+			return fmt.Errorf("destination %q must be a directory", fmt.Sprintf("%s:%s", dstContainer, dstPath))
+		}
+	} else {
+		// Prepare source copy info.
+		srcInfo, err := archive.CopyInfoSourcePath(srcPath, cpParam.followLink)
+		if err != nil {
+			return err
+		}
+
+		srcArchive, err := archive.TarResource(srcInfo)
+		if err != nil {
+			return err
+		}
+		defer srcArchive.Close()
+
+		dstDir, preparedArchive, err := archive.PrepareArchiveCopy(srcArchive, srcInfo, dstInfo)
+		if err != nil {
+			return err
+		}
+		defer preparedArchive.Close()
+
+		resolvedDstPath = dstDir
+		content = preparedArchive
+
+		}
+
+	options := types.CopyToContainerOptions{
+		AllowOverwriteDirWithFile: false,
+	}
+
+	return cli.Client().CopyToContainer(ctx, dstContainer, resolvedDstPath, content, options)
 }
 
 

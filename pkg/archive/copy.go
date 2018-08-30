@@ -11,9 +11,9 @@ import (
 
 	"github.com/Sirupsen/logrus"
 	"github.com/alibaba/pouch/pkg/system"
-	"github.com/docker/docker/pkg/idtools"
-	"github.com/docker/docker/pkg/fileutils"
-	"github.com/docker/docker/pkg/pools"
+	"github.com/alibaba/pouch/pkg/idtools"
+	"github.com/alibaba/pouch/pkg/fileutils"
+	"github.com/alibaba/pouch/pkg/pools"
 	"compress/gzip"
 	"fmt"
 	"bufio"
@@ -819,4 +819,28 @@ func canonicalTarName(name string, isDir bool) (string, error) {
 		name += "/"
 	}
 	return name, nil
+}
+
+// CopyTo handles extracting the given content whose
+// entries should be sourced from srcInfo to dstPath.
+func CopyTo(content Reader, srcInfo CopyInfo, dstPath string) error {
+	// The destination path need not exist, but CopyInfoDestinationPath will
+	// ensure that at least the parent directory exists.
+	dstInfo, err := CopyInfoDestinationPath(normalizePath(dstPath))
+	if err != nil {
+		return err
+	}
+
+	dstDir, copyArchive, err := PrepareArchiveCopy(content, srcInfo, dstInfo)
+	if err != nil {
+		return err
+	}
+	defer copyArchive.Close()
+
+	options := &TarOptions{
+		NoLchown:             true,
+		NoOverwriteDirNonDir: true,
+	}
+
+	return Untar(copyArchive, dstDir, options)
 }

@@ -61,10 +61,9 @@ func initRoute(s *Server) http.Handler {
 	s.addRoute(r, http.MethodPost, "/containers/{name:.*}/restart", s.restartContainer)
 	s.addRoute(r, http.MethodPost, "/containers/{name:.*}/wait", withCancelHandler(s.waitContainer))
 	// copy
+	s.addRoute(r, http.MethodPut, "/containers/{name:.*}/archive", withCancelHandler(s.putContainersArchive))
 	s.addRoute(r, http.MethodHead, "/containers/{name:.*}/archive", withCancelHandler(s.headContainersArchive))
-	s.addRoute(r, http.MethodGet,"/containers/{name:.*}/archive/{path:.*}", withCancelHandler(s.getContainersArchive))
-	//s.addRoute(r, http.MethodPost, "/containers/{name:.*}/copy", withCancelHandler(s.postContainersCopy))
-	//s.addRoute(r, http.MethodPut, "/containers/{name:.*}/archive", withCancelHandler(s.putContainersArchive))
+	s.addRoute(r, http.MethodGet,"/containers/{name:.*}/archive", withCancelHandler(s.getContainersArchive))
 
 	// image
 	s.addRoute(r, http.MethodPost, "/images/create", s.pullImage)
@@ -84,7 +83,6 @@ func initRoute(s *Server) http.Handler {
 	s.addRoute(r, http.MethodDelete, "/volumes/{name:.*}", s.removeVolume)
 
 	// network
-
 	s.addRoute(r, http.MethodGet, "/networks", s.listNetwork)
 	s.addRoute(r, http.MethodPost, "/networks/create", s.createNetwork)
 	s.addRoute(r, http.MethodGet, "/networks/{id:.*}", s.getNetwork)
@@ -103,6 +101,7 @@ func initRoute(s *Server) http.Handler {
 }
 
 func (s *Server) addRoute(r *mux.Router, mothod string, path string, f func(ctx context.Context, rw http.ResponseWriter, req *http.Request) error) {
+	logrus.Println("method, path", mothod, path)
 	r.Path(versionMatcher + path).Methods(mothod).Handler(filter(f, s))
 	r.Path(path).Methods(mothod).Handler(filter(f, s))
 }

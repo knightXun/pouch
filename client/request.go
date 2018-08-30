@@ -55,6 +55,11 @@ func (client *APIClient) head(ctx context.Context, path string, query url.Values
 	return client.sendRequest(ctx, "HEAD", path, query, nil, headers)
 }
 
+
+func (client *APIClient) putRaw(ctx context.Context, path string, query url.Values, data io.Reader, headers map[string][]string) (*Response, error) {
+	return client.sendRequest(ctx, "PUT", path, query, data, headers)
+}
+
 func (client *APIClient) postRawData(ctx context.Context, path string, query url.Values, data io.Reader, headers map[string][]string) (*Response, error) {
 	return client.sendRequest(ctx, "POST", path, query, data, headers)
 }
