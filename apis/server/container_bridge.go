@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"io"
+	"path/filepath"
 
 	"github.com/alibaba/pouch/apis/types"
 	"github.com/alibaba/pouch/daemon/mgr"
@@ -20,8 +22,6 @@ import (
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 	"encoding/base64"
-	"io"
-	"path/filepath"
 )
 
 func (s *Server) createContainer(ctx context.Context, rw http.ResponseWriter, req *http.Request) error {

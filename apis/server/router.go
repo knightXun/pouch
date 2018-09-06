@@ -101,7 +101,6 @@ func initRoute(s *Server) http.Handler {
 }
 
 func (s *Server) addRoute(r *mux.Router, mothod string, path string, f func(ctx context.Context, rw http.ResponseWriter, req *http.Request) error) {
-	logrus.Println("method, path", mothod, path)
 	r.Path(versionMatcher + path).Methods(mothod).Handler(filter(f, s))
 	r.Path(path).Methods(mothod).Handler(filter(f, s))
 }

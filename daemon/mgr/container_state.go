@@ -2,12 +2,12 @@ package mgr
 
 import (
 	"time"
+	"os"
+	"path/filepath"
 
 	"github.com/alibaba/pouch/apis/types"
 	"github.com/alibaba/pouch/pkg/utils"
 	"github.com/Sirupsen/logrus"
-	"os"
-	"path/filepath"
 	"github.com/docker/docker/pkg/symlink"
 )
 

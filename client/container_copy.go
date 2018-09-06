@@ -4,8 +4,6 @@ import (
 	"context"
 	"net/url"
 	"io"
-
-	"github.com/alibaba/pouch/apis/types"
 	"path/filepath"
 	"fmt"
 	"net/http"
@@ -13,6 +11,8 @@ import (
 	"strings"
 	"encoding/json"
 	"io/ioutil"
+
+	"github.com/alibaba/pouch/apis/types"
 )
 
 // ContainerStatPath returns Stat information about a path inside the container filesystem.

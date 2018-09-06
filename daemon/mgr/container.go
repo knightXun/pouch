@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"runtime"
 
 	"github.com/alibaba/pouch/apis/opts"
 	"github.com/alibaba/pouch/apis/plugins"
@@ -41,10 +42,9 @@ import (
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
-	"github.com/alibaba/pouch/pkg/archive"
-	"github.com/alibaba/pouch/pkg/ioutils"
-	"github.com/alibaba/pouch/pkg/idtools"
-	"runtime"
+	"github.com/docker/docker/pkg/archive"
+	"github.com/docker/docker/pkg/ioutils"
+	"github.com/docker/docker/pkg/idtools"
 )
 
 // ContainerMgr as an interface defines all operations against container.

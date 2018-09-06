@@ -10,7 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/alibaba/pouch/apis/types"
-	"github.com/alibaba/pouch/pkg/archive"
+	"github.com/docker/docker/pkg/archive"
 )
 
 // createDescription is used to describe create command in detail and auto generate command doc.
